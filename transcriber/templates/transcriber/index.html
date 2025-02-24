@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Speech Recognition</title>
+    <style>
+        .transcript {
+            margin-top: 20px;
+            padding: 10px;
+            border: 1px solid #ccc;
+            min-height: 100px;
+        }
+        #recordButton {
+            padding: 20px;
+            font-size: 18px;
+            cursor: pointer;
+        }
+        .recording {
+            background-color: red;
+            color: white;
+        }
+    </style>
+</head>
+<body>
+    <button id="recordButton">Start Recording</button>
+    <div id="transcript" class="transcript"></div>
+
+    <script>
+        // Define the AudioWorklet processor code
+        const workletCode = `
+            class AudioProcessor extends AudioWorkletProcessor {
+                process(inputs, outputs, parameters) {
+                    const input = inputs[0][0];
+                    if (input) {
+                        // Convert Float32 to Int16
+                        const samples = new Int16Array(input.length);
+                        for (let i = 0; i < input.length; i++) {
+                            const s = Math.max(-1, Math.min(1, input[i]));
+                            samples[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+                        }
+                        this.port.postMessage(Array.from(samples));
+                    }
+                    return true;
+                }
+            }
+            registerProcessor('audio-processor', AudioProcessor);
+        `;
+
+        let isRecording = false;
+        let socket = null;
+        let audioContext = null;
+        let workletNode = null;
+        let stream = null;
+        const button = document.getElementById('recordButton');
+        const transcriptDiv = document.getElementById('transcript');
+
+        async function startRecording() {
+            try {
+                // Create WebSocket connection
+                socket = new WebSocket('ws://' + window.location.host + '/ws/transcribe/');
+
+                // Get audio stream
+                stream = await navigator.mediaDevices.getUserMedia({
+                    audio: {
+                        channelCount: 1,
+                        sampleRate: 16000
+                    }
+                });
+
+                // Create audio context
+                audioContext = new AudioContext({
+                    sampleRate: 16000,
+                    channelCount: 1
+                });
+
+                // Create and load AudioWorklet
+                const blob = new Blob([workletCode], { type: 'application/javascript' });
+                const workletUrl = URL.createObjectURL(blob);
+                await audioContext.audioWorklet.addModule(workletUrl);
+
+                // Create source and worklet nodes
+                const source = audioContext.createMediaStreamSource(stream);
+                workletNode = new AudioWorkletNode(audioContext, 'audio-processor');
+
+                // Handle audio data from worklet
+                workletNode.port.onmessage = (event) => {
+                    if (socket.readyState === WebSocket.OPEN) {
+                        socket.send(JSON.stringify({
+                            audio: event.data
+                        }));
+                    }
+                };
+
+                // Connect nodes
+                source.connect(workletNode);
+                workletNode.connect(audioContext.destination);
+
+                // Handle WebSocket messages
+                socket.onmessage = (event) => {
+                    const data = JSON.parse(event.data);
+                    if (data.transcript) {
+                        transcriptDiv.textContent += data.transcript + ' ';
+                    }
+                };
+
+                socket.onerror = (error) => {
+                    console.error('WebSocket Error:', error);
+                };
+
+                // Update UI
+                button.textContent = 'Stop Recording';
+                button.classList.add('recording');
+                isRecording = true;
+
+            } catch (err) {
+                console.error('Error:', err);
+            }
+        }
+
+        function stopRecording() {
+            if (stream) {
+                stream.getTracks().forEach(track => track.stop());
+                stream = null;
+            }
+            
+            if (workletNode) {
+                workletNode.disconnect();
+                workletNode = null;
+            }
+
+            if (audioContext) {
+                audioContext.close();
+                audioContext = null;
+            }
+
+            if (socket && socket.readyState === WebSocket.OPEN) {
+                socket.close();
+                socket = null;
+            }
+
+            button.textContent = 'Start Recording';
+            button.classList.remove('recording');
+            isRecording = false;
+        }
+
+        button.addEventListener('click', () => {
+            if (!isRecording) {
+                startRecording();
+            } else {
+                stopRecording();
+            }
+        });
+
+        // Cleanup on page unload
+        window.addEventListener('beforeunload', () => {
+            if (isRecording) {
+                stopRecording();
+            }
+        });
+    </script>
+</body>
+</html>

@@ -1,0 +1,14 @@
+
+*.pyc
+__pycache__/
+speech_env/
+.DS_Store
+*.sqlite3
+vosk_model/
+env/
+.env
+.venv
+venv/
+ENV/
+.idea/
+.vscode/
